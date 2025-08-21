@@ -1,0 +1,261 @@
+// Constants for better maintainability
+const SHEETS = {
+  LEADS: "Leads",
+  FOLLOW_UP: "F/U", 
+  AWARDED: "Awarded",
+  PURGATORY: "Purgatory"
+};
+
+const STAGES = {
+  QUOTE_SENT: "Quote sent",
+  AWARDED: "Awarded", 
+  ARCHIVE: "Archive",
+  LOST: "LOST",
+  LIZ: "Liz"
+};
+
+const STAGE_COLUMN = 4; // Column D
+
+function onEdit(e) {
+  try {
+    var sheet = e.source.getActiveSheet();
+    var range = e.range;
+    
+    // Only act if editing column D (stage) and not header row
+    if (range.getColumn() !== STAGE_COLUMN || range.getRow() === 1) return;
+    
+    var status = range.getValue();
+    var row = range.getRow();
+    
+    // Validate status value exists and isn't empty
+    if (!status || status.toString().trim() === "") {
+      console.log("Empty or invalid status value, skipping");
+      return;
+    }
+    
+    var rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var ss = e.source;
+    var currentSheetName = sheet.getName();
+    
+    console.log(`Processing status change: "${status}" on sheet "${currentSheetName}", row ${row}`);
+    
+    // Get all target sheets with error checking
+    var targetSheets = {
+      leads: getSheetSafely(ss, SHEETS.LEADS),
+      followUp: getSheetSafely(ss, SHEETS.FOLLOW_UP),
+      awarded: getSheetSafely(ss, SHEETS.AWARDED),
+      purgatory: getSheetSafely(ss, SHEETS.PURGATORY)
+    };
+    
+    // Process based on current sheet and status
+    if (currentSheetName === SHEETS.LEADS) {
+      handleLeadsSheet(status, sheet, row, rowData, targetSheets);
+    } else if (currentSheetName === SHEETS.FOLLOW_UP) {
+      handleFollowUpSheet(status, sheet, row, rowData, targetSheets);
+    }
+    
+  } catch (error) {
+    console.error("Error in onEdit trigger:", error.toString());
+    // Optional: Show user-friendly error message
+    SpreadsheetApp.getUi().alert("An error occurred while processing the status change. Please check the logs.");
+  }
+}
+
+// Helper function to safely get sheets
+function getSheetSafely(spreadsheet, sheetName) {
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) {
+    console.error(`Sheet "${sheetName}" not found`);
+  }
+  return sheet;
+}
+
+// Handle status changes from Leads sheet
+function handleLeadsSheet(status, sourceSheet, row, rowData, targetSheets) {
+  if (status === STAGES.QUOTE_SENT && targetSheets.followUp) {
+    moveRowToSheet(sourceSheet, row, targetSheets.followUp, rowData, SHEETS.FOLLOW_UP);
+  } else if (status === STAGES.ARCHIVE && targetSheets.purgatory) {
+    moveRowToSheet(sourceSheet, row, targetSheets.purgatory, rowData, SHEETS.PURGATORY);
+  } else if (status === STAGES.LIZ) {
+    createLizApprovalDraft(sourceSheet, row, rowData);
+  }
+}
+
+// Handle status changes from F/U sheet
+function handleFollowUpSheet(status, sourceSheet, row, rowData, targetSheets) {
+  if (status === STAGES.AWARDED && targetSheets.awarded) {
+    moveRowToSheet(sourceSheet, row, targetSheets.awarded, rowData, SHEETS.AWARDED);
+  } else if ((status === STAGES.ARCHIVE || status === STAGES.LOST) && targetSheets.purgatory) {
+    moveRowToSheet(sourceSheet, row, targetSheets.purgatory, rowData, SHEETS.PURGATORY);
+  }
+}
+
+// Enhanced helper function to move rows with validation and logging
+function moveRowToSheet(sourceSheet, row, targetSheet, rowData, targetSheetName) {
+  if (!targetSheet) {
+    console.error(`Cannot move row: target sheet "${targetSheetName}" not found`);
+    return false;
+  }
+  
+  try {
+    // Add timestamp to track when row was moved (optional enhancement)
+    var timestampedData = [...rowData];
+    // Uncomment next line if you want to add a timestamp column
+    // timestampedData.push(new Date());
+    
+    console.log(`Moving row ${row} from "${sourceSheet.getName()}" to "${targetSheetName}"`);
+    
+    // Move the row
+    targetSheet.appendRow(timestampedData);
+    sourceSheet.deleteRow(row);
+    
+    console.log(`Successfully moved row to "${targetSheetName}"`);
+    return true;
+    
+  } catch (error) {
+    console.error(`Error moving row to "${targetSheetName}":`, error.toString());
+    return false;
+  }
+}
+
+// Optional: Function to validate all required sheets exist (run this manually to check setup)
+function validateSheetSetup() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var missingSheets = [];
+  
+  Object.values(SHEETS).forEach(function(sheetName) {
+    if (!ss.getSheetByName(sheetName)) {
+      missingSheets.push(sheetName);
+    }
+  });
+  
+  if (missingSheets.length > 0) {
+    console.error("Missing sheets:", missingSheets.join(", "));
+    SpreadsheetApp.getUi().alert("Missing sheets: " + missingSheets.join(", "));
+    return false;
+  } else {
+    console.log("All required sheets found ✓");
+    SpreadsheetApp.getUi().alert("All required sheets found ✓");
+    return true;
+  }
+}
+
+// Create Gmail draft for Liz approval
+function createLizApprovalDraft(sourceSheet, row, rowData) {
+  try {
+    console.log(`Creating Liz approval draft for row ${row}`);
+    
+    // Extract data from the row (adjust indices as needed - remember arrays are 0-based)
+    var customerName = rowData[4] || "Unknown Customer"; // Column E = index 4
+    var address = rowData[9] || ""; // Column J = index 9
+    var picsLink = rowData[12] || ""; // Column M = index 12
+    var quoteLink = rowData[15] || ""; // Column P = index 15
+    var earthLink = rowData[16] || ""; // Column Q = index 16
+    var jobType = rowData[17] || ""; // Column R = index 17
+    
+    // Update Re-cover sheet with customer name
+    var ss = sourceSheet.getParent();
+    var recoverSheet = ss.getSheetByName("Re-cover");
+    if (recoverSheet) {
+      recoverSheet.getRange("K2").setValue(customerName);
+      console.log(`Updated Re-cover sheet K2 with customer: ${customerName}`);
+    } else {
+      console.error("Re-cover sheet not found");
+    }
+    
+    // Build email body
+    var emailBody = buildEmailBody(customerName, address, picsLink, quoteLink, earthLink, jobType, recoverSheet);
+    
+    // Create the draft
+    var subject = `Proposal Review: ${customerName}`;
+    var recipient = "Liz@WalkerAwning.com";
+    
+    GmailApp.createDraft(recipient, subject, "", {
+      htmlBody: emailBody,
+      name: "Walker Awning Proposal System"
+    });
+    
+    console.log(`Gmail draft created successfully for ${customerName}`);
+    
+  } catch (error) {
+    console.error("Error creating Liz approval draft:", error.toString());
+  }
+}
+
+// Build the HTML email body
+function buildEmailBody(customerName, address, picsLink, quoteLink, earthLink, jobType, recoverSheet) {
+  var html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+      <h3>Proposal Review Request: ${customerName}</h3>
+      
+      <p><strong>PICS:</strong> <a href="${picsLink}" target="_blank">View Project Photos</a></p>
+      
+      <div style="margin: 20px 0;">
+  `;
+  
+  // Add Re-cover sheet data based on job type
+  if (recoverSheet && (jobType === "Re-Cover" || jobType === "Comp")) {
+    html += getRecoverSheetData(recoverSheet, jobType);
+  }
+  
+  html += `
+      </div>
+      
+      <p><strong>EARTH:</strong> <a href="${earthLink}" target="_blank">View Google Earth Location</a></p>
+  `;
+  
+  // Add Google Maps route if address is available
+  if (address) {
+    var mapsUrl = `https://www.google.com/maps/dir/5190+NW+10th+Terrace,+Fort+Lauderdale,+FL+33309/${encodeURIComponent(address)}`;
+    html += `<p><strong>ROUTE:</strong> <a href="${mapsUrl}" target="_blank">View Route to ${address}</a></p>`;
+  }
+  
+  html += `
+      <p><strong>QUOTE:</strong> <a href="${quoteLink}" target="_blank">View QuickBooks Estimate</a></p>
+      
+      <p>Please review and approve.</p>
+      <p>Best regards,<br>Walker Awning Team</p>
+    </div>
+  `;
+  
+  return html;
+}
+
+// Get data from Re-cover sheet based on job type
+function getRecoverSheetData(recoverSheet, jobType) {
+  try {
+    var range, data;
+    
+    if (jobType === "Re-Cover") {
+      // Get A1:I14 for Re-Cover jobs
+      range = recoverSheet.getRange("A1:I14");
+    } else if (jobType === "Comp") {
+      // Get M1:S31 for Comp jobs
+      range = recoverSheet.getRange("M1:S31");
+    } else {
+      return "<p><em>Job type not specified or unrecognized</em></p>";
+    }
+    
+    data = range.getValues();
+    
+    // Convert to HTML table
+    var tableHtml = '<table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; margin: 10px 0;">';
+    
+    for (var i = 0; i < data.length; i++) {
+      tableHtml += '<tr>';
+      for (var j = 0; j < data[i].length; j++) {
+        var cellValue = data[i][j] || "";
+        tableHtml += `<td style="border: 1px solid #ddd; padding: 5px;">${cellValue}</td>`;
+      }
+      tableHtml += '</tr>';
+    }
+    
+    tableHtml += '</table>';
+    
+    return `<div><strong>${jobType} Details:</strong>${tableHtml}</div>`;
+    
+  } catch (error) {
+    console.error("Error getting Re-cover sheet data:", error.toString());
+    return "<p><em>Error retrieving job details</em></p>";
+  }
+}  
